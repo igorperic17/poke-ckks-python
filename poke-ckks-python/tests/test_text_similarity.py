@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import time
-import hashlib
 import numpy as np
 import pytest
 
 from poke_ckks import CKKSDotProductSearch
+
+try:
+    from sentence_transformers import SentenceTransformer
+    HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    HAS_SENTENCE_TRANSFORMERS = False
 
 
 # 20 hardcoded text paragraphs across various topics
@@ -42,34 +47,42 @@ TEXT_DATABASE = [
 ]
 
 
-def text_to_vector(text: str, dimension: int = 128) -> np.ndarray:
+def get_embedding_model():
+    """Load the sentence transformer model (cached after first call)."""
+    if not HAS_SENTENCE_TRANSFORMERS:
+        pytest.skip("sentence-transformers not installed")
+    
+    # Use a high-quality multilingual model
+    # 'all-MiniLM-L6-v2' is fast and produces 384-dim embeddings
+    # Alternative: 'all-mpnet-base-v2' for higher quality (768-dim)
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    return model
+
+
+def text_to_vector(text: str, model: SentenceTransformer, target_dimension: int = 128) -> np.ndarray:
     """
-    Convert text to a fixed-dimension vector using a simple hashing approach.
+    Convert text to a fixed-dimension vector using SOTA sentence embeddings.
     
-    In production, you would use proper embeddings (e.g., sentence-transformers),
-    but for testing purposes, we create a deterministic vector from text.
+    Uses sentence-transformers to create semantic embeddings, then optionally
+    reduces dimensionality to fit CKKS constraints.
     """
-    # Create a deterministic hash-based vector
-    vector = np.zeros(dimension, dtype=np.float64)
+    # Get semantic embedding from the model
+    embedding = model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
     
-    # Hash the text to get a seed
-    text_hash = int(hashlib.sha256(text.encode()).hexdigest(), 16)
-    rng = np.random.RandomState(text_hash % (2**32))
-    
-    # Generate a random vector based on the hash
-    base_vector = rng.randn(dimension)
+    # If target dimension is different, we need to reduce/expand
+    if target_dimension != embedding.shape[0]:
+        # Simple dimensionality reduction: take first N dimensions
+        # In production, consider PCA or other proper reduction methods
+        if target_dimension < embedding.shape[0]:
+            vector = embedding[:target_dimension]
+        else:
+            # If we need more dimensions, pad with zeros
+            vector = np.zeros(target_dimension, dtype=np.float64)
+            vector[:embedding.shape[0]] = embedding
+    else:
+        vector = embedding.astype(np.float64)
     
     # Normalize to unit length
-    vector = base_vector / np.linalg.norm(base_vector)
-    
-    # Add some structure based on word frequency
-    words = text.lower().split()
-    for i, word in enumerate(words[:dimension]):
-        # Add word-specific features
-        word_val = sum(ord(c) for c in word) / len(word) if word else 0
-        vector[i % dimension] += word_val * 0.01
-    
-    # Re-normalize
     norm = np.linalg.norm(vector)
     if norm > 0:
         vector = vector / norm
@@ -79,7 +92,9 @@ def text_to_vector(text: str, dimension: int = 128) -> np.ndarray:
 
 def test_encrypted_paragraph_similarity_search() -> None:
     """
-    Test homomorphic similarity search with 20 text paragraphs.
+    Test homomorphic similarity search with 20 text paragraphs using SOTA embeddings.
+    
+    Uses sentence-transformers (all-MiniLM-L6-v2) for semantic embeddings.
     
     Simulates:
     1. Private insertion of paragraph embeddings into encrypted database
@@ -89,22 +104,31 @@ def test_encrypted_paragraph_similarity_search() -> None:
     
     print("\n" + "="*80)
     print("HOMOMORPHIC TEXT SIMILARITY SEARCH TEST - 20 PARAGRAPHS")
+    print("Using SOTA Sentence Embeddings (all-MiniLM-L6-v2)")
     print("="*80)
     
     # Configuration
-    dimension = 128
+    dimension = 128  # Reduced from 384 (native model size) for faster CKKS operations
     num_paragraphs = len(TEXT_DATABASE)
     top_k = 3
     
     print(f"\nConfiguration:")
     print(f"  Number of paragraphs: {num_paragraphs}")
-    print(f"  Embedding dimension: {dimension}")
+    print(f"  Embedding model: all-MiniLM-L6-v2 (384-dim)")
+    print(f"  CKKS dimension: {dimension} (reduced for performance)")
     print(f"  Top-K results: {top_k}")
     
-    # Step 1: Create embeddings
-    print(f"\n[1/5] Creating embeddings for {num_paragraphs} paragraphs...")
+    # Step 0: Load embedding model
+    print(f"\n[0/5] Loading sentence transformer model...")
     start_time = time.time()
-    embeddings = [text_to_vector(text, dimension) for text in TEXT_DATABASE]
+    model = get_embedding_model()
+    model_load_time = time.time() - start_time
+    print(f"  ✓ Completed in {model_load_time:.3f}s")
+    
+    # Step 1: Create embeddings
+    print(f"\n[1/5] Creating semantic embeddings for {num_paragraphs} paragraphs...")
+    start_time = time.time()
+    embeddings = [text_to_vector(text, model, dimension) for text in TEXT_DATABASE]
     embed_time = time.time() - start_time
     print(f"  ✓ Completed in {embed_time:.3f}s ({embed_time/num_paragraphs*1000:.1f}ms per paragraph)")
     
@@ -133,7 +157,7 @@ def test_encrypted_paragraph_similarity_search() -> None:
     query_text = "Deep learning and neural networks transform artificial intelligence applications."
     print(f"\n[4/5] Creating query embedding...")
     print(f'  Query: "{query_text}"')
-    query_embedding = text_to_vector(query_text, dimension)
+    query_embedding = text_to_vector(query_text, model, dimension)
     
     # Step 5: Perform homomorphic similarity search
     print(f"\n[5/5] Performing homomorphic similarity search over encrypted database...")
@@ -171,10 +195,11 @@ def test_encrypted_paragraph_similarity_search() -> None:
         print(f"  #{rank} {identifier}: {score:.6f} - {_get_category(para_idx)}")
     
     # Timing summary
-    total_time = embed_time + init_time + encrypt_time + search_time
+    total_time = model_load_time + embed_time + init_time + encrypt_time + search_time
     print(f"\n" + "="*80)
     print("⏱️  TIMING SUMMARY:")
     print("="*80)
+    print(f"  0. Model loading:             {model_load_time:8.3f}s  ({model_load_time/total_time*100:5.1f}%)")
     print(f"  1. Embedding generation:      {embed_time:8.3f}s  ({embed_time/total_time*100:5.1f}%)")
     print(f"  2. CKKS context init:         {init_time:8.3f}s  ({init_time/total_time*100:5.1f}%)")
     print(f"  3. Encryption (20 vectors):   {encrypt_time:8.3f}s  ({encrypt_time/total_time*100:5.1f}%)")
