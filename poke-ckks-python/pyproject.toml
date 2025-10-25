@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poke-ckks"
+version = "0.1.0"
+description = "Homomorphic encrypted dot product search using CKKS."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "Igor Peric" }
+]
+dependencies = [
+    "Pyfhel>=3.4",
+    "numpy>=1.24"
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "numpy>=1.24"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
