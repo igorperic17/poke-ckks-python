@@ -6,11 +6,10 @@ import time
 import numpy as np
 import pytest
 
-from poke_ckks import CKKSDotProductSearch
+from poke_ckks import CKKSDotProductSearch, create_embedder
 
 try:
-    from sentence_transformers import SentenceTransformer
-    HAS_SENTENCE_TRANSFORMERS = True
+    from poke_ckks.text_embeddings import HAS_SENTENCE_TRANSFORMERS
 except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
 
@@ -47,49 +46,6 @@ TEXT_DATABASE = [
 ]
 
 
-def get_embedding_model():
-    """Load the sentence transformer model (cached after first call)."""
-    if not HAS_SENTENCE_TRANSFORMERS:
-        pytest.skip("sentence-transformers not installed")
-    
-    # Use a high-quality multilingual model
-    # 'all-MiniLM-L6-v2' is fast and produces 384-dim embeddings
-    # Alternative: 'all-mpnet-base-v2' for higher quality (768-dim)
-    model = SentenceTransformer('all-MiniLM-L6-v2')
-    return model
-
-
-def text_to_vector(text: str, model: SentenceTransformer, target_dimension: int = 128) -> np.ndarray:
-    """
-    Convert text to a fixed-dimension vector using SOTA sentence embeddings.
-    
-    Uses sentence-transformers to create semantic embeddings, then optionally
-    reduces dimensionality to fit CKKS constraints.
-    """
-    # Get semantic embedding from the model
-    embedding = model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
-    
-    # If target dimension is different, we need to reduce/expand
-    if target_dimension != embedding.shape[0]:
-        # Simple dimensionality reduction: take first N dimensions
-        # In production, consider PCA or other proper reduction methods
-        if target_dimension < embedding.shape[0]:
-            vector = embedding[:target_dimension]
-        else:
-            # If we need more dimensions, pad with zeros
-            vector = np.zeros(target_dimension, dtype=np.float64)
-            vector[:embedding.shape[0]] = embedding
-    else:
-        vector = embedding.astype(np.float64)
-    
-    # Normalize to unit length
-    norm = np.linalg.norm(vector)
-    if norm > 0:
-        vector = vector / norm
-    
-    return vector
-
-
 def test_encrypted_paragraph_similarity_search() -> None:
     """
     Test homomorphic similarity search with 20 text paragraphs using SOTA embeddings.
@@ -101,6 +57,10 @@ def test_encrypted_paragraph_similarity_search() -> None:
     2. Query for most similar paragraphs using homomorphic computation
     3. Retrieval of top-3 results without decrypting the database
     """
+    
+    # Skip if sentence-transformers not available
+    if not HAS_SENTENCE_TRANSFORMERS:
+        pytest.skip("sentence-transformers not installed")
     
     print("\n" + "="*80)
     print("HOMOMORPHIC TEXT SIMILARITY SEARCH TEST - 20 PARAGRAPHS")
@@ -118,17 +78,17 @@ def test_encrypted_paragraph_similarity_search() -> None:
     print(f"  CKKS dimension: {dimension} (reduced for performance)")
     print(f"  Top-K results: {top_k}")
     
-    # Step 0: Load embedding model
+    # Step 0: Initialize text embedder
     print(f"\n[0/5] Loading sentence transformer model...")
     start_time = time.time()
-    model = get_embedding_model()
+    embedder = create_embedder(model_name='all-MiniLM-L6-v2', target_dimension=dimension)
     model_load_time = time.time() - start_time
     print(f"  ✓ Completed in {model_load_time:.3f}s")
     
     # Step 1: Create embeddings
     print(f"\n[1/5] Creating semantic embeddings for {num_paragraphs} paragraphs...")
     start_time = time.time()
-    embeddings = [text_to_vector(text, model, dimension) for text in TEXT_DATABASE]
+    embeddings = embedder.embed_batch(TEXT_DATABASE)
     embed_time = time.time() - start_time
     print(f"  ✓ Completed in {embed_time:.3f}s ({embed_time/num_paragraphs*1000:.1f}ms per paragraph)")
     
@@ -157,7 +117,7 @@ def test_encrypted_paragraph_similarity_search() -> None:
     query_text = "Deep learning and neural networks transform artificial intelligence applications."
     print(f"\n[4/5] Creating query embedding...")
     print(f'  Query: "{query_text}"')
-    query_embedding = text_to_vector(query_text, model, dimension)
+    query_embedding = embedder.embed(query_text)
     
     # Step 5: Perform homomorphic similarity search
     print(f"\n[5/5] Performing homomorphic similarity search over encrypted database...")
