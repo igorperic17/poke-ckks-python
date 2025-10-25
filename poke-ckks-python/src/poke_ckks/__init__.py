@@ -9,6 +9,7 @@ from .encrypted_ann_search import (
     generate_sap_key,
     compute_distance_preservation_error,
 )
+from .oram_search import PathORAM, ORAMBlock, ORAMEncryptedSearch
 
 __all__ = [
     "CKKSDotProductSearch",
@@ -20,4 +21,7 @@ __all__ = [
     "SAPEncryptionKey",
     "generate_sap_key",
     "compute_distance_preservation_error",
+    "PathORAM",
+    "ORAMBlock",
+    "ORAMEncryptedSearch",
 ]
