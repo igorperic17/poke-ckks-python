@@ -6,9 +6,8 @@ Homomorphic similarity search using the CKKS scheme via Pyfhel. The project encr
 
 - CKKS context bootstrap with configurable polynomial degree, scale, and modulus chain.
 - Encryption helper for vector catalogs using `Pyfhel`.
-- Homomorphic element-wise multiplication between a plaintext query and encrypted catalog entries.
-- Decryption and summation of element-wise products to compute dot product similarity scores.
-- Ranking utilities to select the top-k matches once results are authorized to be revealed.
+- Fully homomorphic dot product computation using element-wise multiplication and rotation-based slot summation.
+- Ranking utilities to decrypt similarity scores and select the top-k matches.
 - Pytest-based regression test demonstrating correctness against NumPy.
 
 ## Getting Started
@@ -51,6 +50,7 @@ tests/               Automated tests
 
 ## Security Notes
 
-- The element-wise product is computed homomorphically (on encrypted data), preserving privacy during the multiplication step. However, the final summation to compute the dot product happens after decryption. In a deployment scenario, this decryption step should occur in a trusted environment that holds the secret key.
-- For fully homomorphic dot product computation (including the summation), rotation-based slot aggregation can be implemented, but requires careful handling of CKKS slot rotations and scale management.
+- The entire dot product computation (element-wise multiplication AND summation) is performed homomorphically on encrypted data, preserving privacy throughout the computation.
+- Only the final dot product scores are decrypted in the trusted environment that holds the secret key.
+- Top-k selection currently decrypts the encrypted scores for ranking. In a deployment scenario, perform this step in a trusted environment, or extend the logic with secure comparison protocols if fully private ranking is required.
 - CKKS is approximate; dot products are subject to scale-dependent rounding. Adjust the scale and modulus chain to meet precision requirements.

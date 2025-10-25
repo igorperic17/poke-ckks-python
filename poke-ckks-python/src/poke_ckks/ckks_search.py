@@ -27,7 +27,7 @@ class CKKSDotProductSearch:
         vector_size: int,
         *,
         scale: float = 2**40,
-        polynomial_degree: int = 2**13,
+        polynomial_degree: int = 2**14,
         qi_sizes: Sequence[int] | None = None,
     ) -> None:
         if vector_size <= 0:
@@ -42,7 +42,7 @@ class CKKSDotProductSearch:
         self.polynomial_degree = polynomial_degree
         self.scale = scale
         self.he = Pyfhel()
-        modulus_chain = list(qi_sizes) if qi_sizes is not None else [60, 40, 40, 60]
+        modulus_chain = list(qi_sizes) if qi_sizes is not None else [60, 40, 40, 40, 60]
         if len(modulus_chain) < 2:
             raise ValueError("qi_sizes must contain at least two primes")
         self.he.contextGen(
@@ -53,6 +53,8 @@ class CKKSDotProductSearch:
         )
         self.he.keyGen()
         self.he.relinKeyGen()
+        # Generate all rotation keys (empty list = binary decomposition for all rotations)
+        self.he.rotateKeyGen(rot_steps=[])
 
     @staticmethod
     def _is_power_of_two(value: int) -> bool:
@@ -77,10 +79,11 @@ class CKKSDotProductSearch:
         plain_ptxt = self.he.encodeFrac(arr)
         product = encrypted_vector.ciphertext.copy()
         product *= plain_ptxt
-        self.he.rescale_to_next(product)
-        # Return the element-wise product ciphertext
-        # The sum will be computed after decryption
-        return product
+        # Sum slots BEFORE rescaling (rotation keys work at this level)
+        summed = self._sum_slots(product, arr.size)
+        # Now rescale the summed result
+        self.he.rescale_to_next(summed)
+        return summed
 
     def compute_similarity_ciphertexts(
         self,
@@ -97,8 +100,8 @@ class CKKSDotProductSearch:
         scores: List[Tuple[str | None, float]] = []
         for identifier, ctxt in ciphertexts:
             decoded = self.he.decryptFrac(ctxt)
-            # Sum the first vector_size slots to get the dot product
-            score = float(np.sum(np.real(decoded[:self.vector_size])))
+            # The sum is in slot[0] after homomorphic summation
+            score = float(np.real(decoded[0]))
             scores.append((identifier, score))
         return scores
 
@@ -125,3 +128,22 @@ class CKKSDotProductSearch:
                 f"expected vectors of length {self.vector_size}, received {arr.size}"
             )
         return arr
+
+    def _sum_slots(self, ctxt: PyCtxt, length: int) -> PyCtxt:
+        """Sum the first `length` slots into slot[0] using homomorphic rotations.
+        
+        This rotates the ciphertext by each offset 1, 2, ..., length-1 and adds
+        them all together, so that slot[0] contains the sum of the original
+        slots [0, 1, 2, ..., length-1].
+        """
+        # Start with the original ciphertext
+        result = ctxt.copy()
+        
+        # For each position i from 1 to length-1, rotate a fresh copy and add
+        for i in range(1, length):
+            # IMPORTANT: Must copy before rotate, as rotate modifies in-place
+            temp = ctxt.copy()
+            rotated = self.he.rotate(temp, i)
+            result += rotated
+        
+        return result
